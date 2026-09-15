@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graphify-agent-context"
+version = "0.1.0"
+description = "Explainable Graphify knowledge graph tools for LangChain, LangGraph, and FastAPI"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Victor" }]
+keywords = ["knowledge-graph", "llm", "langchain", "langgraph", "fastapi", "code-intelligence"]
+classifiers = [
+	"Development Status :: 3 - Alpha",
+	"Intended Audience :: Developers",
+	"License :: OSI Approved :: MIT License",
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.10",
+	"Programming Language :: Python :: 3.11",
+	"Programming Language :: Python :: 3.12",
+]
+
+[project.scripts]
+fastapi-graphify = "fastapi_graphify.cli:main"
+
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.2"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["."]

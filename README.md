@@ -1,22 +1,27 @@
 # Graphify Agent Context
 
-Graphify Agent Context is a dependency-light adapter that turns a Graphify code graph into bounded, explainable evidence for AI agents.
+`graphify-agent-context` is a dependency-light adapter that turns a **Graphify code graph** into bounded, explainable evidence for AI agents.
+
+> [!NOTE]
+> [`graphify`](https://graphify.net/) is an open-source skill that helps AI coding assistants understand multi-modal codebases by building a queryable knowledge graph from code, docs, papers and diagrams.
 
 Instead of putting an entire repository into an LLM context window, it exposes deterministic tools for:
 
-- lexical node search with confidence filtering
-- bounded neighborhood inspection
-- directed shortest-path tracing
-- compact multi-hop context packets with evidence metadata
-- optional FastAPI route, dependency, Pydantic model, and middleware extraction
+- Lexical node search with confidence filtering
+- Bounded neighborhood inspection
+- Directed shortest-path tracing
+- Compact multi-hop context packets with evidence metadata
+- Optional FastAPI route, dependency, Pydantic model, and middleware extraction
 
-The graph remains the source of truth. The LLM chooses when to ask a question; this package performs the graph traversal and keeps the result small enough to inspect and cite.
+The graph remains the **source of truth**. The LLM chooses when to ask a question; this package performs the graph traversal and keeps the result small enough to inspect and cite.
 
 ## Why this is useful
 
-Code agents often have retrieval, but not reliable structural retrieval. Graphify provides relationships; this project adds a stable tool contract around those relationships. The result is useful for architecture Q&A, onboarding, impact analysis, API documentation, and agent traces where a response should distinguish extracted facts from inferred ones.
+Code agents often have retrieval, but not reliable structural retrieval. 
 
-This is an integration layer, not a replacement for Graphify, LangChain, LangGraph, or a vector database. Lexical search is deliberately deterministic and can later be replaced behind the same store contract.
+Graphify provides relationships; this project adds a stable tool contract around those relationships. The result is useful for architecture Q&A, onboarding, impact analysis, API documentation, and agent traces where a response should distinguish extracted facts from inferred ones.
+
+This is an **integration layer**, not a replacement for Graphify, LangChain, LangGraph, or a vector database. Lexical search is deliberately deterministic and can later be replaced behind the same store contract.
 
 ## Install
 
@@ -28,6 +33,22 @@ python -m pip install -e ".[langchain]"
 The core store does not require LangChain, NetworkX, FastAPI, or an LLM.
 
 ## LangChain and LangGraph
+
+### What the `langchain_integration` adapter does
+
+The `langchain_integration` adapter connects a `GraphifyStore` to LangChain
+and LangGraph without making LangChain a dependency of the core store. It:
+
+- wraps bounded graph queries as LangChain tools: `search_graph`,
+  `inspect_graph_node`, `trace_graph_path`, and `graph_context`
+- returns JSON-serializable, confidence-aware evidence for an agent instead of
+  exposing the complete graph
+- provides `graphify_context_node(store)`, a LangGraph-compatible node that
+  reads `question`, `input`, or the latest message and writes `graphify_context`
+  into state
+
+Use this adapter when an agent needs to search the graph, inspect relationships,
+trace dependencies, or retrieve bounded context while answering a question.
 
 ```python
 from graphify_integration import GraphifyStore
@@ -42,6 +63,23 @@ The adapters expose `search_graph`, `inspect_graph_node`, `trace_graph_path`, an
 For LangGraph, add `graphify_context_node(store)` before the model node. It reads `question`, `input`, or the latest message and writes `graphify_context` to state.
 
 ## FastAPI analysis
+
+### What the `fastapi_graphify` adapter does
+
+The `fastapi_graphify` adapter enriches an existing Graphify graph with
+FastAPI-specific facts collected from Python source using the AST. It:
+
+- extracts routes, HTTP methods, paths, path parameters, handlers, response
+  models, status codes, and source locations
+- identifies Pydantic models, `Depends(...)` declarations, nested dependency
+  relationships, and middleware
+- materializes typed FastAPI domain nodes and edges for downstream graph or
+  agent queries
+- produces the same report as Markdown or JSON, while falling back to
+  Graphify metadata when source analysis is incomplete
+
+Use this adapter when you need an API architecture report or want to add
+FastAPI domain relationships to the graph before passing evidence to an agent.
 
 ```bash
 fastapi-graphify ./my-api --output FASTAPI_REPORT.md
@@ -60,7 +98,9 @@ The tests cover deterministic ranking, confidence filters, bounded traversal, ex
 
 ## Project status
 
-This is an alpha portfolio project. The most valuable next steps are benchmark fixtures from real Graphify outputs, richer Python symbol resolution, and an MCP server exposing the same bounded query contract.
+This is an alpha portfolio project. 
+
+The most valuable next steps are benchmark fixtures from real Graphify outputs, richer Python symbol resolution, and an MCP server exposing the same bounded query contract.
 
 ## License
 
