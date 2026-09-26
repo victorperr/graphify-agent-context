@@ -27,6 +27,8 @@ fastapi-graphify = "fastapi_graphify.cli:main"
 [project.optional-dependencies]
 langchain = ["langchain-core>=0.2"]
 dev = ["pytest>=8"]
+eval = ["openai>=1.0"]
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.setuptools]
+packages = ["fastapi_graphify", "graphify_integration"]
+package-dir = { graphify_integration = "langchain_integration/graphify_integration" }

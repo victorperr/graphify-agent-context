@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from .store import GraphifyStore
 
@@ -40,11 +40,28 @@ def create_graphify_tools(store: GraphifyStore) -> list[Any]:
     ]
 
 
+def _message_text(message: Any) -> str:
+    """Read text from a LangChain message object, a dict, or a (role, content) tuple."""
+    if isinstance(message, Mapping):
+        content = message.get("content", "")
+    elif isinstance(message, tuple) and len(message) == 2:
+        content = message[1]
+    else:
+        content = getattr(message, "content", message)
+    if isinstance(content, list):  # multimodal content blocks
+        return " ".join(block if isinstance(block, str) else str(block.get("text", ""))
+                        for block in content if isinstance(block, (str, Mapping)))
+    return str(content or "")
+
+
 def graphify_context_node(store: GraphifyStore):
     """Return a LangGraph-compatible node: state in, evidence in state out."""
-    def node(state: dict[str, Any]) -> dict[str, Any]:
-        query = state.get("question") or state.get("input") or state.get(
-            "messages", [{"content": ""}])[-1].get("content", "")
+    def node(state: Mapping[str, Any]) -> dict[str, Any]:
+        messages = state.get("messages") or []
+        query = state.get("question") or state.get("input") or (
+            _message_text(messages[-1]) if messages else "")
+        if not str(query).strip():
+            return {"graphify_context": {"query": "", "matches": [], "evidence": [], "hyperedges": [], "error": "empty_query"}}
         return {"graphify_context": store.context(str(query))}
 
     return node

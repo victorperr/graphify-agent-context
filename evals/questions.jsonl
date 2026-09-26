@@ -1,0 +1,19 @@
+{"id": "q01", "category": "response_model", "question": "What response model does POST /items/ return?", "expected": ["ItemPublic"], "evidence": "app/api/routes/items.py"}
+{"id": "q02", "category": "response_model", "question": "What response model does GET /items/ return?", "expected": ["ItemsPublic"], "evidence": "app/api/routes/items.py"}
+{"id": "q03", "category": "response_model", "question": "What does DELETE /items/{id} return?", "expected": ["Message"], "evidence": "app/api/routes/items.py"}
+{"id": "q04", "category": "response_model", "question": "What model does POST /login/access-token return?", "expected": ["Token"], "evidence": "app/api/routes/login.py"}
+{"id": "q05", "category": "response_model", "question": "What does POST /password-recovery/{email} return?", "expected": ["Message"], "evidence": "app/api/routes/login.py"}
+{"id": "q06", "category": "routing", "question": "Which handler function serves GET /users/me?", "expected": ["read_user_me"], "evidence": "app/api/routes/users.py"}
+{"id": "q07", "category": "routing", "question": "Which handler function serves PATCH /users/me/password?", "expected": ["update_password_me"], "evidence": "app/api/routes/users.py"}
+{"id": "q08", "category": "routing", "question": "Which route lets a new user register without being logged in?", "expected": ["signup"], "evidence": "app/api/routes/users.py"}
+{"id": "q09", "category": "routing", "question": "Which handler functions take a user_id path parameter?", "expected": ["read_user_by_id", "update_user", "delete_user"], "evidence": "app/api/routes/users.py"}
+{"id": "q10", "category": "routing", "question": "What is the URL path of the health check endpoint?", "expected": ["health-check"], "evidence": "app/api/routes/utils.py"}
+{"id": "q11", "category": "dependency", "question": "Which dependency restricts GET /users/ to superusers?", "expected": ["get_current_active_superuser"], "evidence": "app/api/routes/users.py"}
+{"id": "q12", "category": "dependency", "question": "Which dependency does get_current_active_superuser rely on to obtain the user?", "expected": ["get_current_user"], "evidence": "app/api/deps.py"}
+{"id": "q13", "category": "dependency", "question": "Which function decodes the JWT to identify the user making a request?", "expected": ["get_current_user"], "evidence": "app/api/deps.py"}
+{"id": "q14", "category": "dependency", "question": "Which generator function provides the database session injected into routes?", "expected": ["get_db"], "evidence": "app/api/deps.py"}
+{"id": "q15", "category": "call_graph", "question": "Which crud function does the login access-token route call to check the email and password?", "expected": ["authenticate"], "evidence": "app/api/routes/login.py"}
+{"id": "q16", "category": "call_graph", "question": "Which function creates the token sent in password recovery emails?", "expected": ["generate_password_reset_token"], "evidence": "app/utils.py"}
+{"id": "q17", "category": "structure", "question": "Which middleware class is added to the FastAPI app in app/main.py?", "expected": ["CORSMiddleware"], "evidence": "app/main.py"}
+{"id": "q18", "category": "structure", "question": "Which route module is only included in the API router when ENVIRONMENT is local?", "expected": ["private"], "evidence": "app/api/main.py"}
+{"id": "q19", "category": "structure", "question": "Which table model stores items, and which field links an item to its owner?", "expected": ["Item", "owner_id"], "evidence": "app/models.py"}
