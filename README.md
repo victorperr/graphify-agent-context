@@ -2,6 +2,12 @@
 
 `graphify-agent-context` is a dependency-light adapter that turns a **Graphify code graph** into bounded, explainable evidence for AI agents.
 
+## Results
+
+<!-- eval:start -->
+_Not run yet. See [Evaluation](#evaluation) to reproduce._
+<!-- eval:end -->
+
 > [!NOTE]
 > [`graphify`](https://graphify.net/) is an open-source skill that helps AI coding assistants understand multi-modal codebases by building a queryable knowledge graph from code, docs, papers and diagrams.
 
@@ -22,6 +28,13 @@ Code agents often have retrieval, but not reliable structural retrieval.
 Graphify provides relationships; this project adds a stable tool contract around those relationships. The result is useful for architecture Q&A, onboarding, impact analysis, API documentation, and agent traces where a response should distinguish extracted facts from inferred ones.
 
 This is an **integration layer**, not a replacement for Graphify, LangChain, LangGraph, or a vector database. Lexical search is deliberately deterministic and can later be replaced behind the same store contract.
+
+### Use cases
+
+- **API security audit**: "Which endpoints have no auth dependency? Which admin routes skip the superuser check?" 
+-**Pull-request impact check in CI**: a bot comment like "this PR changes get_current_user, which affects 14 routes, 3 of them public." 
+
+- **Always-current API documentation**: an architecture report regenerated on every commit, useful for onboarding and for audits.
 
 ## Install
 
@@ -58,7 +71,7 @@ store = GraphifyStore.from_json("graphify-out/graph.json")
 tools = create_graphify_tools(store)
 ```
 
-The adapters expose `search_graph`, `inspect_graph_node`, `trace_graph_path`, and `graph_context`. `graph_context` is the recommended default for an agent because it returns bounded evidence rather than an unstructured graph dump.
+The adapters expose `search_graph`, `inspect_graph_node`, `trace_graph_path`, and `graph_context`. `graph_context` is the recommended default for an agent because it returns bounded evidence rather than an unstructured graph dump. The limits are listed in the [adapter README](langchain_integration/README.md#langchain).
 
 For LangGraph, add `graphify_context_node(store)` before the model node. It reads `question`, `input`, or the latest message and writes `graphify_context` to state.
 
@@ -95,6 +108,29 @@ pytest -q
 ```
 
 The tests cover deterministic ranking, confidence filters, bounded traversal, explicit error results, FastAPI extraction, and domain graph relationships.
+
+## Evaluation
+
+> The eval uses the OpenAI SDK
+
+19 questions about `full-stack-fastapi-template`.
+
+[`evals/run_eval.py`](evals/run_eval.py) asks the same known-answer questions ([`evals/questions.jsonl`](evals/questions.jsonl)) to two agents that share a model, system prompt, 12-turn limit and 12k-character tool-output cap. Only the tools differ:
+
+- **file_search**: `list_files`, `grep` and `read_file` over the repository, which is what a typical coding agent gets.
+- **graph_context**: `graph_context`, `search_graph` and `inspect_graph_node` over the Graphify graph enriched with FastAPI routes, models and dependencies.
+
+An answer is correct when it contains every expected identifier (case-insensitive exact match). Tokens are the OpenAI `total_tokens` (prompt + completion) summed across all turns. Per-question answers and stats are written to `evals/results/`.
+
+```bash
+git clone https://github.com/fastapi/full-stack-fastapi-template ../full-stack-fastapi-template
+# build the graph with Graphify inside ../full-stack-fastapi-template/backend
+python -m pip install -e ".[eval]"
+export OPENAI_API_KEY=...
+python evals/run_eval.py --repo ../full-stack-fastapi-template/backend --graph ../full-stack-fastapi-template/backend/graphify-out/graph.json --update-readme
+```
+
+`--limit 3` runs a cheap smoke test first. `--update-readme` rewrites the [Results](#results) table.
 
 ## Project status
 

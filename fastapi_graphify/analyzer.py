@@ -17,7 +17,12 @@ from typing import Any, Iterable, Mapping
 
 HTTP_METHODS = {"get", "post", "put", "patch",
                 "delete", "options", "head", "trace", "websocket"}
-STATUS_CODE_RE = re.compile(r"\b([1-5][0-9]{2})\b")
+DEPENDENCY_CALLS = {"Depends", "Security"}
+MODEL_BASES = {"BaseModel", "SQLModel"}
+# Return annotations FastAPI accepts but that carry no model worth a graph node.
+NON_MODEL_RETURNS = {"Any", "None", "bool", "int",
+                     "float", "str", "bytes", "dict", "list", "Response"}
+HTTP_STATUS_NAME_RE = re.compile(r"HTTP_([1-5][0-9]{2})_")
 PATH_PARAM_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)[^}]*\}")
 
 
@@ -41,6 +46,7 @@ class Model:
     file: str
     line: int
     bases: list[str] = field(default_factory=list)
+    table: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,10 +132,25 @@ class FastAPIAnalyzer:
             self._build_domain_graph(report)
             return report
         root = Path(source_root)
+        modules = []
         for path in sorted(root.rglob("*.py")):
             if any(part in {".git", ".venv", "venv", "__pycache__"} for part in path.parts):
                 continue
-            self._extract_file(path, root, report)
+            tree = self._parse(path)
+            if tree is not None:
+                modules.append((path.relative_to(root).as_posix(), tree))
+        # Aliases such as `CurrentUser = Annotated[User, Depends(get_current_user)]` are
+        # usually defined in one module and used in others, so we need to collect them from all modules first.
+        aliases = _dependency_aliases(tree for _, tree in modules)
+        classes: list[Model] = []
+        for relative, tree in modules:
+            visitor = _FastAPIVisitor(relative, aliases)
+            visitor.visit(tree)
+            report.routes.extend(visitor.routes)
+            report.dependencies.extend(visitor.dependencies)
+            report.middleware.extend(visitor.middleware)
+            classes.extend(visitor.classes)
+        report.models.extend(_model_classes(classes))
         self._extract_from_graph(report)
         self._build_domain_graph(report)
         return report
@@ -142,19 +163,12 @@ class FastAPIAnalyzer:
         output.write_text(report.to_markdown() if format ==
                           "markdown" else report.to_json(), encoding="utf-8")
 
-    def _extract_file(self, path: Path, root: Path, report: FastAPIReport) -> None:
+    @staticmethod
+    def _parse(path: Path) -> ast.Module | None:
         try:
-            tree = ast.parse(path.read_text(
-                encoding="utf-8"), filename=str(path))
-        except (OSError, SyntaxError):
-            return
-        relative = path.relative_to(root).as_posix()
-        visitor = _FastAPIVisitor(relative)
-        visitor.visit(tree)
-        report.routes.extend(visitor.routes)
-        report.models.extend(visitor.models)
-        report.dependencies.extend(visitor.dependencies)
-        report.middleware.extend(visitor.middleware)
+            return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return None
 
     def _extract_from_graph(self, report: FastAPIReport) -> None:
         """Use Graphify metadata when source AST input is unavailable or incomplete."""
@@ -180,8 +194,9 @@ class FastAPIAnalyzer:
         edges: list[dict[str, Any]] = []
 
         def add_node(node_id: str, node_type: str, label: str, **metadata: Any) -> None:
+            # Merge, so a model first seen as a route's response model still gets its source location.
             nodes.setdefault(
-                node_id, {"id": node_id, "type": node_type, "label": label, **metadata})
+                node_id, {"id": node_id, "type": node_type, "label": label}).update(metadata)
 
         for route in report.routes:
             route_id = f"route:{route.file}:{route.handler}"
@@ -201,7 +216,7 @@ class FastAPIAnalyzer:
                     {"source": route_id, "target": dependency_id, "relation": "depends_on"})
         for model in report.models:
             add_node(f"model:{model.name}", "pydantic_model",
-                     model.name, source_file=model.file, line=model.line)
+                     model.name, source_file=model.file, line=model.line, table=model.table)
         for dependency in report.dependencies:
             dependency_id = f"dependency:{dependency.name}"
             add_node(dependency_id, "fastapi_dependency", dependency.name,
@@ -222,12 +237,27 @@ class FastAPIAnalyzer:
 
 
 class _FastAPIVisitor(ast.NodeVisitor):
-    def __init__(self, file: str):
+    def __init__(self, file: str, aliases: Mapping[str, list[str]] | None = None):
         self.file = file
+        self.aliases = aliases or {}
+        self.routers: dict[str, tuple[str, list[str]]] = {}
         self.routes: list[Route] = []
-        self.models: list[Model] = []
+        self.classes: list[Model] = []
         self.dependencies: list[Dependency] = []
         self.middleware: list[Middleware] = []
+
+    def visit_Module(self, node: ast.Module) -> None:
+        # Record `router = APIRouter(prefix=..., dependencies=...)` before visiting the routes that use it.
+        for statement in node.body:
+            if isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Call) \
+                    and _name(statement.value.func) in {"APIRouter", "FastAPI"}:
+                prefix = _keyword_value(statement.value, "prefix")
+                router = (prefix.value if isinstance(prefix, ast.Constant) and isinstance(prefix.value, str) else "",
+                          _dependency_calls(_keyword_value(statement.value, "dependencies")))
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        self.routers[target.id] = router
+        self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -236,13 +266,27 @@ class _FastAPIVisitor(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        bases = [_expression(base) for base in node.bases]
-        if any(base.rsplit(".", 1)[-1] == "BaseModel" for base in bases):
-            self.models.append(Model(node.name, self.file, node.lineno, bases))
+        table = any(keyword.arg == "table" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+                    for keyword in node.keywords)
+        self.classes.append(Model(node.name, self.file, node.lineno,
+                                  [_expression(base) for base in node.bases], table))
         self.generic_visit(node)
+
+    def _parameter_dependencies(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+        """Dependencies from `x=Depends(f)` defaults, inline `Annotated[..., Depends(f)]`, and aliases of it."""
+        arguments = node.args
+        dependencies = [dependency for default in arguments.defaults + arguments.kw_defaults
+                        for dependency in _dependency_calls(default)]
+        for argument in arguments.posonlyargs + arguments.args + arguments.kwonlyargs:
+            dependencies += _dependency_calls(argument.annotation)
+            if isinstance(argument.annotation, (ast.Name, ast.Attribute)):
+                dependencies += self.aliases.get(
+                    _name(argument.annotation), [])
+        return list(dict.fromkeys(dependencies))
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         is_route = False
+        parameter_dependencies = self._parameter_dependencies(node)
         for decorator in node.decorator_list:
             call = decorator if isinstance(decorator, ast.Call) else None
             target = call.func if call else decorator
@@ -255,21 +299,107 @@ class _FastAPIVisitor(ast.NodeVisitor):
                 continue
             is_route = True
             method = target.attr.upper()
-            path = _call_argument(call, 0) or "/"
-            dependencies = [_expression(default) for default in node.args.defaults +
-                            node.args.kw_defaults if default and "Depends" in _expression(default)]
+            router = _expression(target.value)
+            prefix, router_dependencies = self.routers.get(router, ("", []))
+            path = (prefix + _call_argument(call, 0)) or "/"
+            dependencies = list(dict.fromkeys(
+                router_dependencies + _dependency_calls(_keyword_value(call, "dependencies")) + parameter_dependencies))
             response_models = [_expression(keyword.value) for keyword in (
                 call.keywords if call else []) if keyword.arg == "response_model"]
-            decorator_text = _expression(decorator)
-            status_codes = sorted(
-                {int(code) for code in STATUS_CODE_RE.findall(decorator_text)})
+            if not response_models and node.returns is not None and _name(node.returns) not in NON_MODEL_RETURNS:
+                # FastAPI uses the return annotation as the response model when response_model is absent.
+                response_models = [_expression(node.returns)]
             self.routes.append(Route(path, method, node.name, self.file, node.lineno, sorted(set(
-                PATH_PARAM_RE.findall(path))), dependencies, response_models, status_codes, _expression(target.value)))
-        if not is_route and any("Depends(" in _expression(default) for default in node.args.defaults + node.args.kw_defaults if default):
-            dependencies = [_expression(default) for default in node.args.defaults +
-                            node.args.kw_defaults if default and "Depends" in _expression(default)]
+                PATH_PARAM_RE.findall(path))), dependencies, response_models, _status_codes(call), router))
+        if not is_route and parameter_dependencies:
             self.dependencies.append(Dependency(
-                node.name, self.file, node.lineno, dependencies))
+                node.name, self.file, node.lineno, parameter_dependencies))
+
+
+def _name(node: ast.AST) -> str:
+    """Last dotted component of an expression: `status.HTTP_200_OK` -> `HTTP_200_OK`, `list[X]` -> `list`."""
+    if isinstance(node, ast.Subscript):
+        node = node.value
+    return _expression(node).rsplit(".", 1)[-1]
+
+
+def _keyword_value(call: ast.Call | None, name: str) -> ast.AST | None:
+    return next((keyword.value for keyword in (call.keywords if call else []) if keyword.arg == name), None)
+
+
+def _annotated_type(node: ast.AST | None) -> str:
+    """The type in `Annotated[Type, ...]`, which `Depends()` without arguments resolves to."""
+    if isinstance(node, ast.Subscript) and _name(node.value) == "Annotated" \
+            and isinstance(node.slice, ast.Tuple) and node.slice.elts:
+        return _expression(node.slice.elts[0])
+    return ""
+
+
+def _dependency_calls(node: ast.AST | None) -> list[str]:
+    """`Depends(...)` and `Security(...)` calls inside an expression, normalized to `Depends(target)`."""
+    if node is None:
+        return []
+    implied = _annotated_type(node)
+    found = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and _name(child.func) in DEPENDENCY_CALLS:
+            target = child.args[0] if child.args else _keyword_value(
+                child, "dependency")
+            name = _expression(target) if target is not None else implied
+            if name:
+                found.append(f"Depends({name})")
+    return found
+
+
+def _dependency_aliases(trees: Iterable[ast.Module]) -> dict[str, list[str]]:
+    """Module-level `Alias = Annotated[T, Depends(f)]` (also `Alias: TypeAlias = ...` and `type Alias = ...`)."""
+    aliases: dict[str, list[str]] = {}
+    for tree in trees:
+        for statement in tree.body:
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name):
+                name, value = statement.targets[0].id, statement.value
+            elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                name, value = statement.target.id, statement.value
+            elif type(statement).__name__ == "TypeAlias":  # Python 3.12 `type Alias = ...`
+                name, value = statement.name.id, statement.value
+            else:
+                continue
+            if _annotated_type(value) and (dependencies := _dependency_calls(value)):
+                aliases[name] = dependencies
+    return aliases
+
+
+def _model_classes(classes: list[Model]) -> list[Model]:
+    """Classes deriving from BaseModel or SQLModel, directly or through other project classes."""
+    known = set(MODEL_BASES)
+    changed = True
+    while changed:
+        changed = False
+        for model in classes:
+            if model.name not in known and any(base.rsplit(".", 1)[-1] in known for base in model.bases):
+                known.add(model.name)
+                changed = True
+    return [model for model in classes if model.name in known]
+
+
+def _status_code(node: ast.AST) -> int | None:
+    if isinstance(node, ast.Constant) and str(node.value).isdigit():
+        return int(node.value)
+    match = HTTP_STATUS_NAME_RE.search(_expression(node))
+    return int(match.group(1)) if match else None
+
+
+def _status_codes(call: ast.Call | None) -> list[int]:
+    """Codes from `status_code=` and the keys of `responses=`, read from the AST rather than the decorator text."""
+    codes = []
+    status_code = _keyword_value(call, "status_code")
+    if status_code is not None:
+        codes.append(_status_code(status_code))
+    responses = _keyword_value(call, "responses")
+    if isinstance(responses, ast.Dict):
+        codes += [_status_code(key)
+                  for key in responses.keys if key is not None]
+    return sorted({code for code in codes if code is not None})
 
 
 def _expression(node: ast.AST | None) -> str:
